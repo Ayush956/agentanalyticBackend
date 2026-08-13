@@ -30,6 +30,19 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
+    frontend_url: str = ""
+
+    @property
+    def cors_origins(self) -> list[str]:
+        origins = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "https://elegant-rolypoly-d5e460.netlify.app",
+        ]
+        if self.frontend_url and self.frontend_url not in origins:
+            origins.append(self.frontend_url.rstrip("/"))
+        return origins
+
     @property
     def postgres_url(self) -> str:
         return (
