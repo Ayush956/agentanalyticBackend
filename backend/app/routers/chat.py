@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
@@ -13,18 +13,19 @@ from app.services.openai_service import stream_chat
 
 router = APIRouter(tags=["chat"])
 
-THINKING_DELAY_SECONDS = 1.5
 
-
-async def _stream_to_websocket(session_id: str, prompt: str) -> None:
+async def _stream_to_websocket(
+    session_id: str,
+    prompt: str,
+    analytics_context: Optional[dict[str, Any]] = None,
+) -> None:
     try:
         await manager.send_json(
             session_id,
             StatusMessage(status="thinking", session_id=session_id).model_dump(),
         )
-        await asyncio.sleep(THINKING_DELAY_SECONDS)
 
-        async for delta in stream_chat(prompt):
+        async for delta in stream_chat(prompt, analytics_context):
             sent = await manager.send_json(
                 session_id,
                 ChunkMessage(content=delta).model_dump(),
@@ -91,6 +92,12 @@ async def chat(
             detail="WebSocket not connected for this session",
         )
 
-    asyncio.create_task(_stream_to_websocket(request.session_id, request.prompt))
+    asyncio.create_task(
+        _stream_to_websocket(
+            request.session_id,
+            request.prompt,
+            request.analytics_context,
+        )
+    )
 
     return ChatResponse(session_id=request.session_id)

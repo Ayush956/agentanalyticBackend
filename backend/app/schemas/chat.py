@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     prompt: str = Field(..., min_length=1)
+    analytics_context: Optional[dict[str, Any]] = None
 
 
 class ChatResponse(BaseModel):

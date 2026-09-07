@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-20b"
+
     frontend_url: str = ""
 
     @property
