@@ -6,7 +6,7 @@ from groq import AsyncGroq
 
 from app.config import get_settings
 
-SYSTEM_PROMPT = """You are Agent Analytics Intelligence, an AI assistant for Maruti Suzuki ticket analytics dashboards.
+SYSTEM_PROMPT = """You are Agent Analytics Intelligence, an AI assistant for Ayush Analytics ticket analytics dashboards.
 
 Rules:
 - Answer ONLY using the analytics_context JSON provided by the user.
