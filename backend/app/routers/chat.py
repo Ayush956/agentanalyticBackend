@@ -1,15 +1,26 @@
 import asyncio
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from app.agent.llm_client import friendly_llm_error
+from app.agent.runner import run_agent
+from app.agent.tools import TOOL_LABELS, tool_label
 from app.dependencies import get_current_user, get_user_from_token
 from app.models.user import User
 from app.postgres import SessionLocal
-from app.schemas.chat import ChatRequest, ChatResponse, ChunkMessage, StatusMessage
+from app.schemas.chat import (
+    A2UIMessage,
+    ChatRequest,
+    ChatResetRequest,
+    ChatResponse,
+    ChunkMessage,
+    DashboardUIMessage,
+    StatusMessage,
+)
+from app.services import chat_history
 from app.services.connection_manager import manager
-from app.services.openai_service import stream_chat
 
 router = APIRouter(tags=["chat"])
 
@@ -17,33 +28,110 @@ router = APIRouter(tags=["chat"])
 async def _stream_to_websocket(
     session_id: str,
     prompt: str,
-    analytics_context: Optional[dict[str, Any]] = None,
+    user: User,
+    request: ChatRequest,
 ) -> None:
+    user_id = str(user.id)
+    collected: list[str] = []
+
+    async def on_tool_call(tool_name: str, arguments: Optional[dict] = None) -> None:
+        args = arguments or {}
+        label = tool_label(tool_name, args) if tool_name == "query_analytics" else TOOL_LABELS.get(
+            tool_name, tool_name
+        )
+        await manager.send_json(
+            session_id,
+            StatusMessage(
+                status="tool_call",
+                session_id=session_id,
+                tool=tool_name,
+                message=label,
+            ).model_dump(),
+        )
+
     try:
+        history = chat_history.get_history(session_id, user_id)
+        chat_history.add_message(session_id, user_id, "user", prompt)
+
         await manager.send_json(
             session_id,
             StatusMessage(status="thinking", session_id=session_id).model_dump(),
         )
 
-        async for delta in stream_chat(prompt, analytics_context):
+        explorer_config = {
+            "breakdown_by": request.explorer_config.breakdown_by,
+            "period": request.explorer_config.period,
+            "view": request.explorer_config.view,
+        }
+
+        dashboard_context = None
+        if request.dashboard_context:
+            dashboard_context = request.dashboard_context.model_dump()
+
+        async def on_dashboard_ui(actions: list) -> None:
+            await manager.send_json(
+                session_id,
+                DashboardUIMessage(
+                    actions=actions,
+                    summary="Dashboard updated",
+                ).model_dump(),
+            )
+
+        async def on_a2ui(surface_id: str, messages: list, summary: Optional[str]) -> None:
+            await manager.send_json(
+                session_id,
+                A2UIMessage(
+                    surface_id=surface_id,
+                    messages=messages,
+                    summary=summary,
+                ).model_dump(),
+            )
+
+        disconnected = False
+        async for delta in run_agent(
+            prompt=prompt,
+            history=history,
+            user_id=user_id,
+            filters=request.filters,
+            active_tab=request.active_tab,
+            explorer_config=explorer_config,
+            dashboard_context=dashboard_context,
+            on_tool_call=on_tool_call,
+            on_dashboard_ui=on_dashboard_ui,
+            on_a2ui=on_a2ui,
+        ):
+            collected.append(delta)
             sent = await manager.send_json(
                 session_id,
                 ChunkMessage(content=delta).model_dump(),
             )
             if not sent:
-                return
+                disconnected = True
+                break
 
-        await manager.send_json(
-            session_id,
-            StatusMessage(status="completed", session_id=session_id).model_dump(),
-        )
+        final_text = "".join(collected).strip()
+        if final_text:
+            chat_history.add_message(session_id, user_id, "assistant", final_text)
+
+        if not disconnected:
+            await manager.send_json(
+                session_id,
+                StatusMessage(status="completed", session_id=session_id).model_dump(),
+            )
     except Exception as exc:
+        from app.config import get_settings
+
+        settings = get_settings()
         await manager.send_json(
             session_id,
             StatusMessage(
                 status="error",
                 session_id=session_id,
-                message=str(exc),
+                message=friendly_llm_error(
+                    exc,
+                    has_openai_key=bool(settings.openai_api_key),
+                    has_gemini_key=bool(settings.gemini_api_key),
+                ),
             ).model_dump(),
         )
 
@@ -84,7 +172,7 @@ async def chat_websocket(
 @router.post("/api/chat", response_model=ChatResponse, status_code=202)
 async def chat(
     request: ChatRequest,
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> ChatResponse:
     if not manager.is_connected(request.session_id):
         raise HTTPException(
@@ -92,12 +180,15 @@ async def chat(
             detail="WebSocket not connected for this session",
         )
 
-    asyncio.create_task(
-        _stream_to_websocket(
-            request.session_id,
-            request.prompt,
-            request.analytics_context,
-        )
-    )
+    asyncio.create_task(_stream_to_websocket(request.session_id, request.prompt, user, request))
 
     return ChatResponse(session_id=request.session_id)
+
+
+@router.post("/api/chat/reset")
+async def reset_chat(
+    request: ChatResetRequest,
+    user: User = Depends(get_current_user),
+) -> dict:
+    chat_history.clear_session(request.session_id, str(user.id))
+    return {"session_id": request.session_id, "status": "cleared"}

@@ -112,3 +112,35 @@ class FiltersResponse(BaseModel):
     statuses: list[str]
     decision_matrices: list[str]
     years: list[int]
+
+
+class TicketCountBreakdownItem(BaseModel):
+    label: str
+    count: int
+    percentage: float
+
+
+class TicketCountBreakdownResponse(BaseModel):
+    breakdown_by: str
+    status_filter: Optional[str] = None
+    total_matching: int
+    data: list[TicketCountBreakdownItem]
+
+
+class AnalyticsQuerySegment(BaseModel):
+    label: str
+    value: float
+    ticket_count: int
+    percentage: Optional[float] = None
+    segments: Optional[list["AnalyticsQuerySegment"]] = None
+
+
+class AnalyticsQueryResponse(BaseModel):
+    measure: str
+    breakdown_by: Optional[str] = None
+    secondary_breakdown_by: Optional[str] = None
+    unit: str = ""
+    filters_applied: dict = Field(default_factory=dict)
+    total_matching: int
+    total_value: float
+    data: list[AnalyticsQuerySegment]

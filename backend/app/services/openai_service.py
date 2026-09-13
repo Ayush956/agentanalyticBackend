@@ -2,8 +2,7 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
-from groq import AsyncGroq
-
+from app.agent.llm_client import AgentLLM, AllProvidersExhaustedError, friendly_llm_error
 from app.config import get_settings
 
 SYSTEM_PROMPT = """You are Agent Analytics Intelligence, an AI assistant for Ayush Analytics ticket analytics dashboards.
@@ -39,27 +38,39 @@ async def stream_chat(
     prompt: str,
     analytics_context: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[str, None]:
-    settings = get_settings()
+    llm = AgentLLM(get_settings())
 
-    if not settings.groq_api_key:
+    if not llm.configured:
         yield (
             "The AI assistant is not configured. "
-            "Please set GROQ_API_KEY in the backend .env file."
+            "Set GROQ_API_KEY and/or OPENAI_API_KEY in the backend .env file."
         )
         return
 
-    client = AsyncGroq(api_key=settings.groq_api_key)
-
-    stream = await client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_message(prompt, analytics_context)},
-        ],
-        temperature=0.2,
-        max_tokens=1024,
-        stream=True,
-    )
+    try:
+        stream = await llm.create_completion(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_message(prompt, analytics_context)},
+            ],
+            temperature=0.2,
+            max_tokens=1024,
+            stream=True,
+        )
+    except AllProvidersExhaustedError as exc:
+        yield friendly_llm_error(
+            exc,
+            has_openai_key=llm.has_paid_fallback,
+            has_gemini_key=llm.has_gemini_fallback,
+        )
+        return
+    except Exception as exc:
+        yield friendly_llm_error(
+            exc,
+            has_openai_key=llm.has_paid_fallback,
+            has_gemini_key=llm.has_gemini_fallback,
+        )
+        return
 
     async for chunk in stream:
         delta = chunk.choices[0].delta.content
