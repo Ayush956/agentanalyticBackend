@@ -38,9 +38,16 @@ When the user asks a question without requesting UI changes, use `query_analytic
 | `query_analytics` | Fetch metrics (no UI change) |
 | `search_tickets` | Keyword search; may emit A2UI ticket table |
 
+## Routing
+
+Every user message goes to the **LLM first**. The model picks a tool; the backend executes
+it (WebSocket `dashboard_ui` / `a2ui` for UI, Mongo for data). Regex helpers in `tools.py`
+only **enrich** tool arguments after the LLM call (e.g. month/status inference), not block
+the LLM.
+
 ## Files
 
-- `runner.py` — Groq tool-calling loop
+- `runner.py` — LLM tool-calling loop
 - `tools.py` — tool definitions
 - `widget_catalog.py` — fixed widget IDs and allowed actions
 - `a2ui_builder.py` — analytics JSON → A2UI messages

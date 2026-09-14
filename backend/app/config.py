@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "llama3.2"
 
-    # Comma-separated fallback order, e.g. groq,gemini,openai,ollama
-    llm_providers: str = "groq,gemini,openai,ollama"
+    # Comma-separated fallback order (default: gemini first to reduce Groq free-tier TPM hits)
+    llm_providers: str = "gemini,groq,openai,ollama"
 
     frontend_url: str = ""
 

@@ -10,19 +10,14 @@ from app.agent.prompts import AGENT_SYSTEM_PROMPT
 from app.agent.tools import (
     TOOL_DEFINITIONS,
     execute_tool,
-    infer_add_analytics_from_prompt,
     merge_add_analytics_args,
-    infer_bulk_remove_actions,
     infer_closure_status_from_prompt,
     infer_status_from_prompt,
     infer_months_from_prompt,
     infer_remove_a2ui_from_prompt,
     infer_visualization_from_prompt,
     infer_widget_actions_from_prompt,
-    try_dashboard_unfulfilled_message,
-    try_graceful_decline,
 )
-from app.agent.widget_catalog import get_widget_title
 from app.config import get_settings
 from app.schemas.analytics import AnalyticsFilters
 
@@ -100,13 +95,31 @@ def _tool_message_content(raw: str, tool_name: str) -> str:
         )
 
     if tool_name == "update_dashboard_ui" and isinstance(parsed, dict):
+        actions = parsed.get("actions") or []
         return json.dumps(
             {
                 "ok": parsed.get("ok", True),
                 "applied": parsed.get("applied", 0),
-                "reply_hint": "Confirm the dashboard change in one short sentence.",
+                "actions": actions,
+                "reply_hint": (
+                    "The live dashboard was updated. Confirm what changed in one short "
+                    "sentence (labels, chart type, hide/show, or removed A2UI surface)."
+                ),
             },
             indent=2,
+        )
+
+    if tool_name == "query_analytics" and isinstance(parsed, dict):
+        return json.dumps(
+            {
+                **parsed,
+                "reply_hint": (
+                    "Answer the user's question using this data only. "
+                    "Be specific (names, numbers). Do not suggest dashboard UI changes unless asked."
+                ),
+            },
+            indent=2,
+            default=str,
         )
 
     return json.dumps(parsed, indent=2, default=str)
@@ -142,135 +155,6 @@ def _assistant_message_for_history(
     return entry
 
 
-def _format_dashboard_update_reply(actions: list[dict[str, Any]]) -> str:
-    remove_count = sum(1 for action in actions if action.get("action") == "remove_surface")
-    if remove_count > 1:
-        return f"Removed **{remove_count}** agent-added charts from the dashboard."
-
-    parts: list[str] = []
-    for action in actions:
-        act = action.get("action")
-        if act == "remove_surface":
-            parts.append("Removed the agent-added chart from the dashboard.")
-            continue
-        widget_id = str(action.get("widget_id") or "")
-        title = get_widget_title(widget_id) or widget_id.replace("_", " ").title()
-        props = action.get("props") or {}
-        if act == "hide":
-            parts.append(f"Hidden **{title}**.")
-        elif act == "show":
-            parts.append(f"Shown **{title}**.")
-        elif act == "configure":
-            if "showDataLabels" in props:
-                if props.get("showDataLabels"):
-                    parts.append(f"Added data labels to **{title}**.")
-                else:
-                    parts.append(f"Removed data labels from **{title}**.")
-            elif props.get("chartType"):
-                parts.append(f"Changed **{title}** to a {props['chartType']} chart.")
-            else:
-                parts.append(f"Updated **{title}**.")
-    return " ".join(parts) if parts else "Dashboard updated."
-
-
-async def _try_fast_add_analytics(
-    prompt: str,
-    user_id: str,
-    filters: AnalyticsFilters,
-    explorer_config: dict[str, str],
-    history: list[dict[str, str]],
-    on_tool_call: Optional[OnToolCall],
-    on_a2ui: Optional[OnA2UI],
-) -> Optional[str]:
-    args = infer_add_analytics_from_prompt(prompt, history)
-    if not args:
-        return None
-
-    if on_tool_call:
-        await on_tool_call("add_analytics_surface", args)
-
-    result = execute_tool(
-        "add_analytics_surface",
-        args,
-        user_id,
-        filters,
-        explorer_config,
-    )
-    try:
-        parsed = json.loads(result)
-    except json.JSONDecodeError:
-        return None
-
-    if on_a2ui:
-        a2ui_messages = parsed.get("a2ui_messages")
-        surface_id = parsed.get("surface_id")
-        if a2ui_messages and surface_id:
-            from app.agent.a2ui_builder import _title_from_analytics
-
-            analytics = parsed.get("analytics") or {}
-            summary = _title_from_analytics(analytics) if analytics else "Analytics chart"
-            await on_a2ui(surface_id, a2ui_messages, str(summary))
-
-    analytics = parsed.get("analytics") or {}
-    from app.agent.a2ui_builder import _title_from_analytics
-
-    title = _title_from_analytics(analytics) if analytics else "chart"
-    return (
-        f"Added **{title}** to the dashboard — scroll to the "
-        "**Added by AI** section to view it."
-    )
-
-
-async def _try_fast_dashboard_update(
-    prompt: str,
-    user_id: str,
-    filters: AnalyticsFilters,
-    explorer_config: dict[str, str],
-    dashboard_context: Optional[dict[str, Any]],
-    history: list[dict[str, str]],
-    on_tool_call: Optional[OnToolCall],
-    on_dashboard_ui: Optional[OnDashboardUI],
-) -> Optional[str]:
-    bulk_remove = infer_bulk_remove_actions(prompt, dashboard_context)
-    if bulk_remove is not None:
-        if not bulk_remove:
-            return "There are no agent-added charts to remove."
-        actions = bulk_remove
-    else:
-        actions = infer_widget_actions_from_prompt(prompt, history, dashboard_context)
-        if not actions and infer_remove_a2ui_from_prompt(prompt):
-            surface_ids = (dashboard_context or {}).get("surface_ids") or []
-            if surface_ids:
-                actions = [{"action": "remove_surface", "surface_id": surface_ids[-1]}]
-
-    if not actions:
-        return None
-
-    if on_tool_call:
-        await on_tool_call("update_dashboard_ui", {"actions": actions})
-
-    result = execute_tool(
-        "update_dashboard_ui",
-        {"actions": actions},
-        user_id,
-        filters,
-        explorer_config,
-    )
-    try:
-        parsed = json.loads(result)
-    except json.JSONDecodeError:
-        return None
-
-    applied = parsed.get("actions") or []
-    if not applied:
-        return None
-
-    if on_dashboard_ui:
-        await on_dashboard_ui(applied)
-
-    return _format_dashboard_update_reply(applied)
-
-
 async def run_agent(
     prompt: str,
     history: list[dict[str, str]],
@@ -302,43 +186,6 @@ async def run_agent(
         "has_openai_key": llm.has_paid_fallback,
         "has_gemini_key": llm.has_gemini_fallback,
     }
-
-    decline = try_graceful_decline(prompt, history, dashboard_context)
-    if decline:
-        yield decline
-        return
-
-    fast_add = await _try_fast_add_analytics(
-        prompt,
-        user_id,
-        filters,
-        explorer_config,
-        history,
-        on_tool_call,
-        on_a2ui,
-    )
-    if fast_add:
-        yield fast_add
-        return
-
-    fast_reply = await _try_fast_dashboard_update(
-        prompt,
-        user_id,
-        filters,
-        explorer_config,
-        dashboard_context,
-        history,
-        on_tool_call,
-        on_dashboard_ui,
-    )
-    if fast_reply:
-        yield fast_reply
-        return
-
-    unfulfilled = try_dashboard_unfulfilled_message(prompt, history, dashboard_context)
-    if unfulfilled:
-        yield unfulfilled
-        return
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": AGENT_SYSTEM_PROMPT},

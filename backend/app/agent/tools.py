@@ -368,7 +368,12 @@ _CHANGE_INTENT = re.compile(
 )
 
 _DATA_QUESTION = re.compile(
-    r"\b(what|how many|how much|average|avg|total|count|tell me|explain|why|when|compare|list)\b",
+    r"\b("
+    r"what|which|who|how many|how much|how long|"
+    r"average|avg|total|count|tell me|explain|why|when|compare|list|"
+    r"slowest|fastest|highest|lowest|most|least|best|worst|top|bottom|"
+    r"maximum|minimum|max|min|rank|ranking"
+    r")\b",
     re.I,
 )
 
@@ -569,9 +574,27 @@ def _resolve_widget_from_history(
     return None
 
 
+def _is_ui_change_intent(text: str) -> bool:
+    if _LABELS_PATTERN.search(text) or _REMOVE_LABELS_PATTERN.search(text):
+        return True
+    if _CHANGE_INTENT.search(text) and _extract_chart_types(text):
+        return True
+    if re.search(r"\b(change|convert|switch|make|turn)\b", text) and re.search(
+        r"\b(chart|graph|widget|pie|bar|line|column|table)\b", text
+    ):
+        return True
+    if re.search(r"\b(add|remove|hide|delete)\b", text) and re.search(
+        r"\b(chart|graph|table|labels?|widget|surface)\b", text
+    ):
+        return True
+    return False
+
+
 def _is_data_question(prompt: str) -> bool:
     text = (prompt or "").lower()
-    return bool(_DATA_QUESTION.search(text)) and not _CHANGE_INTENT.search(text)
+    if _is_ui_change_intent(text):
+        return False
+    return bool(_DATA_QUESTION.search(text))
 
 
 def is_likely_dashboard_ui_prompt(
@@ -676,6 +699,9 @@ def _match_widget_id(
     prompt: str,
     dashboard_context: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
+    if _is_data_question(prompt):
+        return None
+
     text = (prompt or "").lower()
     tab_scope = _infer_tab_scope(prompt, dashboard_context)
 
@@ -683,8 +709,6 @@ def _match_widget_id(
         if phrase in text and _widget_allowed_on_tab(widget_id, tab_scope):
             return widget_id
 
-    if _is_data_question(prompt):
-        return None
     if "closure" in text and ("month" in text or "volume" in text or "vloume" in text):
         return "closure_volume"
     if "explorer" in text or "configurable measure" in text:
